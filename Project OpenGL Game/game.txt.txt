@@ -1,0 +1,506 @@
+from OpenGL.GL import *
+from OpenGL.GLU import *
+from OpenGL.GLUT import *
+import sys
+import math
+
+obstacles = [
+    # x, y, z, width, height, depth
+    [-4, 0, 5, 2, 2, 2],      # cube block
+    [3, 0, -3, 2, 4, 1.5],    # tall wall
+    [0, 0, 10, 5, 1, 1],      # long bar
+    [-6, 0, -7, 1, 3, 5],     # vertical wall
+]
+yaw = 0.0        # left-right
+pitch = 0.0      # up-down
+last_mouse_x = None
+last_mouse_y = None
+mouse_sensitivity = 0.2
+platform_pos = [0.0, 0.0, -8.0]  # x, y (animated), z
+platform_amplitude = 3.0         # how high it moves
+platform_speed = 0.002           # bobbing speed
+player_pos = [0.0, 0.0, 0.0]
+move_speed = 0.2
+pressed_keys = set()
+crystal_angle = 0.0
+crystals = [
+    [5, 0, 5],
+    [-5, 0, -5],
+    [10, 0, -2],
+    [-8, 0, 7]
+]
+
+
+collected_crystals = 0
+collection_radius = 1.5  # how close player must be to collect
+lava_height = -2.0 # starts below ground
+lava_speed = 0.001
+game_over = False
+needs_redraw = True  # Initial redraw needed
+enemies = [
+    [10.0, 0.0, -10.0],
+    [-12.0, 0.0, 8.0]
+]
+enemy_speed = 0.02
+enemy_radius = 1.0
+
+
+def init():
+    glClearColor(0.05, 0.05, 0.08, 1.0)  # Slightly bluish black background
+    glEnable(GL_DEPTH_TEST)
+    glEnable(GL_LIGHTING)
+    glEnable(GL_LIGHT0)
+
+    glLightfv(GL_LIGHT0, GL_POSITION, [10, 20, 10, 1])
+    glLightfv(GL_LIGHT0, GL_AMBIENT, [0.2, 0.2, 0.2, 1.0])   # ambient cave fill
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.6, 0.6, 0.6, 1.0])   # softer key light
+    glLightfv(GL_LIGHT0, GL_SPECULAR, [0.8, 0.8, 0.8, 1.0])  # mild shiny edges
+
+    glEnable(GL_COLOR_MATERIAL)  # allow glColor3f() to affect lighting
+    glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE)
+
+
+def reshape(w, h):
+    if h == 0:
+        h = 1
+    glViewport(0, 0, w, h)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(75.0, float(w)/float(h), 0.1, 150.0)
+    glMatrixMode(GL_MODELVIEW)
+
+def draw_obstacles():
+    glColor3f(0.3, 0.3, 0.3)  # stone gray
+    glMaterialfv(GL_FRONT, GL_EMISSION, [0.05, 0.05, 0.05, 1.0])
+
+    for obs in obstacles:
+        x, y, z, w, h, d = obs
+        glPushMatrix()
+        glTranslatef(x, y + h / 2, z)
+        glScalef(w, h, d)
+        glutSolidCube(1.0)
+        glPopMatrix()
+
+
+def draw_cave():
+    glDisable(GL_LIGHTING)
+    glColor3f(0.15, 0.1, 0.1)  # Dark reddish   # Dim stone-gray
+
+    size = 40   # wider cave
+    height = 30 # taller ceiling
+
+    glBegin(GL_QUADS)
+    
+    # Left wall
+    glVertex3f(-size, -1, -size)
+    glVertex3f(-size, -1,  size)
+    glVertex3f(-size, height,  size)
+    glVertex3f(-size, height, -size)
+
+    # Right wall
+    glVertex3f(size, -1, -size)
+    glVertex3f(size, -1,  size)
+    glVertex3f(size, height,  size)
+    glVertex3f(size, height, -size)
+
+    # Back wall
+    glVertex3f(-size, -1, -size)
+    glVertex3f(size, -1, -size)
+    glVertex3f(size, height, -size)
+    glVertex3f(-size, height, -size)
+
+    # Front wall
+    glVertex3f(-size, -1, size)
+    glVertex3f(size, -1, size)
+    glVertex3f(size, height, size)
+    glVertex3f(-size, height, size)
+
+    # Ceiling
+    glVertex3f(-size, height, -size)
+    glVertex3f(size, height, -size)
+    glVertex3f(size, height, size)
+    glVertex3f(-size, height, size)
+
+    glEnd()
+    glEnable(GL_LIGHTING)
+
+
+
+
+def draw_platform():
+    time = glutGet(GLUT_ELAPSED_TIME)
+    y = math.sin(time * platform_speed) * platform_amplitude
+    platform_pos[1] = y
+
+    glPushMatrix()
+    glTranslatef(platform_pos[0], y, platform_pos[2])
+    glColor3f(0.6, 0.6, 0.8)
+    glMaterialfv(GL_FRONT, GL_EMISSION, [0.2, 0.2, 0.4, 1.0])
+    glScalef(4, 0.5, 4)  # make it a flat rectangle
+    glutSolidCube(1)
+    glPopMatrix()
+
+    
+def draw_enemies():
+    time = glutGet(GLUT_ELAPSED_TIME) * 0.002  # smoother animation
+
+    for i, pos in enumerate(enemies):
+        ex, ey, ez = pos
+
+        # Bobbing height using sine wave
+        bob = math.sin(time + i) * 0.5  # offset each enemy for variety
+        float_y = ey + bob
+
+        glPushMatrix()
+        glTranslatef(ex, float_y, ez)
+        glColor3f(1.0, 0.1, 0.1)
+        glMaterialfv(GL_FRONT, GL_EMISSION, [0.3, 0.05, 0.05, 1.0])
+        glutSolidSphere(1.2, 16, 16)
+        glPopMatrix()
+
+
+def draw_crystals():
+    global crystal_angle
+    for pos in crystals:
+        glPushMatrix()
+        glTranslatef(*pos)
+        glRotatef(crystal_angle, 0, 1, 0)
+
+        ambient = [0.0, 0.0, 0.0, 1.0]
+        diffuse = [0.1, 0.6, 1.0, 1.0]
+        specular = [0.3, 0.9, 1.0, 1.0]
+        
+
+        glMaterialfv(GL_FRONT, GL_AMBIENT, ambient)
+        glMaterialfv(GL_FRONT, GL_DIFFUSE, diffuse)
+        glMaterialfv(GL_FRONT, GL_SPECULAR, specular)
+        glMaterialfv(GL_FRONT, GL_EMISSION, [0.1, 0.4, 1.0, 1.0])  # brighter, but not washed out
+
+
+        glutSolidCube(1.2)
+        glPopMatrix()
+
+def draw_lava():
+    glPushMatrix()
+    glTranslatef(0.0, lava_height, 0.0)
+
+    # Set red-orange base color
+    intensity = 0.8 + 0.2 * math.sin(glutGet(GLUT_ELAPSED_TIME) * 0.005)
+    glColor3f(intensity, 0.2 * intensity, 0.0)
+
+    # glColor3f(1.0, 0.2, 0.0)  # pure lava color
+
+    # Disable lighting to show actual color (this overrides white flash)
+    glDisable(GL_LIGHTING)
+
+    glBegin(GL_QUADS)
+
+    segments = 50
+    size = 25
+
+    for x in range(-size, size, 2):
+        for z in range(-size, size, 2):
+            wave = math.sin((x + z + glutGet(GLUT_ELAPSED_TIME) * 0.005)) * 0.1
+
+            glVertex3f(x, wave, z)
+            glVertex3f(x+2, wave, z)
+            glVertex3f(x+2, wave, z+2)
+            glVertex3f(x, wave, z+2)
+    
+    glMaterialfv(GL_FRONT, GL_EMISSION, [0.3, 0.05, 0.05, 1.0])
+
+    glEnd()
+
+    glEnable(GL_LIGHTING)  # Re-enable lighting for rest of the scene
+    glPopMatrix()
+
+
+
+    # glBegin(GL_QUADS)
+
+    # segments = 50
+    # size = 25
+
+    # for x in range(-size, size, int(2*size/segments)):
+    #     for z in range(-size, size, int(2*size/segments)):
+    #         # Create some wave height based on time and position
+    #         wave = math.sin((x + z + glutGet(GLUT_ELAPSED_TIME) * 0.005)) * 0.15
+
+    #         glVertex3f(x, 0.0 + wave, z)
+    #         glVertex3f(x+1, 0.0 + wave, z)
+    #         glVertex3f(x+1, 0.0 + wave, z+1)
+    #         glVertex3f(x, 0.0 + wave, z+1)
+
+    # glEnd()
+    # glPopMatrix()
+
+def draw_player():
+    time = glutGet(GLUT_ELAPSED_TIME) * 0.002
+    bob = math.sin(time) * 0.2  # hover up/down effect
+    tilt = math.sin(time) * 2.5  # slight forward/back tilt
+
+    glPushMatrix()
+    glTranslatef(player_pos[0], player_pos[1] + bob, player_pos[2])
+    glRotatef(-yaw, 0, 1, 0)  # rotate to face movement direction  # tilting animation
+
+    # 🔷 Hoverboard Base
+    glPushMatrix()
+    glScalef(2.5, 0.3, 1.2)
+    glColor3f(0.2, 0.8, 1.0)
+    glMaterialfv(GL_FRONT, GL_SPECULAR, [0.4, 0.8, 1.0, 1.0])
+    glMaterialfv(GL_FRONT, GL_EMISSION, [0.05, 0.2, 0.4, 1.0])  # soft blue glow
+    glMaterialf(GL_FRONT, GL_SHININESS, 40)
+    glutSolidCube(1)
+    glPopMatrix()
+
+
+    # 🔴 Side Thruster Left
+    glPushMatrix()
+    glTranslatef(-1.0, -0.2, 0.5)
+    glColor3f(1.0, 0.3, 0.3)
+    glMaterialfv(GL_FRONT, GL_EMISSION, [0.6, 0.1, 0.1, 1.0])
+    glutSolidSphere(0.3, 12, 12)
+    glPopMatrix()
+
+    # 🔴 Side Thruster Right
+    glPushMatrix()
+    glTranslatef(1.0, -0.2, 0.5)
+    glColor3f(1.0, 0.3, 0.3)
+    glMaterialfv(GL_FRONT, GL_EMISSION, [0.6, 0.1, 0.1, 1.0])
+    glutSolidSphere(0.3, 12, 12)
+    glPopMatrix()
+
+    # 💡 (Future Torch Head): Add a front-mounted light here
+    # e.g., glTranslatef(0, 0.2, -1.2)
+
+    glPopMatrix()
+
+
+def display():
+    global needs_redraw
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glLoadIdentity()
+    draw_cave()
+    # Follow camera (relative to player)
+    eye_x = player_pos[0]
+    eye_y = player_pos[1] + 8
+    eye_z = player_pos[2] + 20
+
+
+        # Camera direction vector from yaw and pitch
+    rad_yaw = math.radians(yaw)
+    rad_pitch = math.radians(pitch)
+
+    look_x = math.cos(rad_pitch) * math.sin(rad_yaw)
+    look_y = math.sin(rad_pitch)
+    look_z = -math.cos(rad_pitch) * math.cos(rad_yaw)
+
+    # Third-person distance from player (we'll make this toggle later)
+    cam_distance = 8
+    cam_height = 3
+
+    cam_x = player_pos[0] - look_x * cam_distance
+    cam_y = player_pos[1] + cam_height
+    cam_z = player_pos[2] - look_z * cam_distance
+
+    gluLookAt(cam_x, cam_y, cam_z,
+              player_pos[0], player_pos[1], player_pos[2],
+              0, 1, 0)
+
+
+    # Ground
+    glColor3f(0.3, 0.3, 0.3)
+    glDisable(GL_LIGHTING)
+    glBegin(GL_QUADS)
+    glVertex3f(-20, -1, -20)
+    glVertex3f(20, -1, -20)
+    glVertex3f(20, -1, 20)
+    glVertex3f(-20, -1, 20)
+    glEnd()
+    glEnable(GL_LIGHTING)
+
+
+    
+    draw_platform()
+    draw_obstacles
+    draw_lava()
+    # Draw crystals
+    draw_crystals()
+    draw_enemies()
+    # Draw player
+    draw_player()
+    # glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, [0.2, 0.8, 1.0, 1.0])
+    # glMaterialfv(GL_FRONT, GL_EMISSION, [0.0, 0.0, 0.0, 1.0])  # No glow
+   
+
+    glDisable(GL_LIGHTING)
+    glColor3f(1.0, 1.0, 1.0)
+    draw_text(10, 580, f"Crystals: {collected_crystals} / 4")
+
+    if game_over:
+        if len(crystals) == 0:
+            draw_text(350, 300, "🎉 YOU WIN!", GLUT_BITMAP_TIMES_ROMAN_24)
+        else:
+            draw_text(330, 300, "💀 GAME OVER!", GLUT_BITMAP_TIMES_ROMAN_24)
+    glEnable(GL_LIGHTING)
+
+
+    glutSwapBuffers()
+    needs_redraw = False  # Reset the flag after drawing
+
+def update(value):
+    global player_pos, crystal_angle, needs_redraw, lava_height, game_over
+    moved = False
+
+    if game_over:
+        glutPostRedisplay()
+        glutTimerFunc(16, update, 0)
+        return
+
+    # Convert yaw to radians
+    rad = math.radians(yaw)
+
+    # Direction vectors based on yaw
+    forward_x = math.sin(rad)
+    forward_z = -math.cos(rad)
+    right_x = math.cos(rad)
+    right_z = math.sin(rad)
+
+    if b'w' in pressed_keys:
+        player_pos[0] += forward_x * move_speed
+        player_pos[2] += forward_z * move_speed
+    if b's' in pressed_keys:
+        player_pos[0] -= forward_x * move_speed
+        player_pos[2] -= forward_z * move_speed
+    if b'd' in pressed_keys:
+        player_pos[0] += right_x * move_speed
+        player_pos[2] -= right_z * move_speed
+    if b'a' in pressed_keys:
+        player_pos[0] -= right_x * move_speed
+        player_pos[2] += right_z * move_speed
+
+
+    if moved or crystal_angle > 0: # Redraw if player moved or crystals are rotating
+        needs_redraw = True
+        # Check for crystal collection
+        global collected_crystals
+        remaining = []
+        for pos in crystals:
+            dx = player_pos[0] - pos[0]
+            dz = player_pos[2] - pos[2]
+            distance = math.sqrt(dx*dx + dz*dz)
+            if distance > collection_radius:
+                remaining.append(pos)
+            else:
+                collected_crystals += 1
+                print(f"💎 Collected a crystal! Total: {collected_crystals}")
+
+        # Update the list of crystals
+        crystals[:] = remaining
+            # Move enemies toward player
+        for i in range(len(enemies)):
+            ex, ey, ez = enemies[i]
+            dx = player_pos[0] - ex
+            dz = player_pos[2] - ez
+            dist = math.sqrt(dx*dx + dz*dz)
+            if dist > 0:
+                ex += enemy_speed * dx / dist
+                ez += enemy_speed * dz / dist
+                enemies[i] = [ex, ey, ez]
+
+            # Check collision
+            if dist < enemy_radius + 1.0:
+                print("💀 Game Over! A fire spirit caught you.")
+                game_over = True
+            # Check if player is on platform (XZ match and near height)
+            dx = player_pos[0] - platform_pos[0]
+            dz = player_pos[2] - platform_pos[2]
+            dist_xz = math.sqrt(dx*dx + dz*dz)
+
+            if dist_xz < 2.0:
+                # If platform is close to player Y, snap player to it
+                if abs(player_pos[1] - platform_pos[1]) < 1.5:
+                    player_pos[1] = platform_pos[1] + 1.0  # hover above it
+            else:
+                player_pos[1] = 0.0  # return to ground when not on platform
+
+
+        glutPostRedisplay() # Request redraw after potential collection
+
+    # Win condition
+    if len(crystals) == 0 and not game_over:
+        print("🎉 You Win! All crystals collected.")
+        game_over = True
+        glutPostRedisplay() # Request redraw to show win state
+
+    # Rotate crystals
+    crystal_angle += 1.5
+    if crystal_angle > 360:
+        crystal_angle -= 360
+
+    # Raise lava
+    lava_height += lava_speed
+
+    # Game over if lava reaches player base (player is at y = 0, cube height = 2)
+    if lava_height >= -1.0:
+        print("🔥 Game Over! Lava reached you.")
+        game_over = True
+        glutPostRedisplay() # Request redraw to show game over state
+
+    glutTimerFunc(16, update, 0)
+
+def mouse_motion(x, y):
+    global yaw, pitch, last_mouse_x, last_mouse_y
+
+    if last_mouse_x is None:
+        last_mouse_x = x
+        last_mouse_y = y
+        return
+
+    dx = x - last_mouse_x
+    dy = y - last_mouse_y
+
+    last_mouse_x = x
+    last_mouse_y = y
+
+    yaw += dx * mouse_sensitivity
+    pitch -= dy * mouse_sensitivity  # invert y for FPS-style look
+
+    # Clamp pitch to avoid flipping
+    pitch = max(-89.0, min(89.0, pitch))
+
+
+def key_down(key, x, y):
+    global pressed_keys, needs_redraw
+    pressed_keys.add(key)
+    needs_redraw = True # Need to redraw when a key is pressed (even if no movement yet)
+    if key == b'\x1b':
+        sys.exit()
+
+def key_up(key, x, y):
+    global pressed_keys
+    if key in pressed_keys:
+        pressed_keys.remove(key)
+
+def draw_text(x, y, text, font=GLUT_BITMAP_TIMES_ROMAN_24):
+    glWindowPos2f(x, y)
+    for ch in text:
+        glutBitmapCharacter(font, ord(ch))
+
+
+glutInit()
+
+glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
+glutInitWindowSize(800, 600)
+glutInitWindowPosition(100, 100)
+glutCreateWindow(b"Crystal Rush 3D - Glowing Crystals")
+
+init()
+glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.8, 1.0])  # Slightly dimmer light
+glutPassiveMotionFunc(mouse_motion)  # handles mouse move without click
+glutDisplayFunc(display)
+glutReshapeFunc(reshape)
+glutKeyboardFunc(key_down)
+glutKeyboardUpFunc(key_up)
+glutTimerFunc(0, update, 0)
+glutMainLoop()
